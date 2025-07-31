@@ -93,23 +93,20 @@ def normalize_price(text):
 
 def extract_sku(name):
     if not name:
-        return ""
-    # Remove RTL marks and normalize whitespace
-    name = re.sub(r'[\u200e\u200f\u202a-\u202e]', '', name)
-    name = ' '.join(name.split())
+        return " "
 
-    # Regex: match blocks of at least 2 allowed chars, must contain at least one letter
-    pattern = r'([A-Z0-9 \-/_+()]{2,})'
-    matches = re.finditer(pattern, name, re.IGNORECASE)
+    name = name.upper().replace("\u200f", " ")  # remove RTL char
 
-    candidates = []
-    for match in matches:
-        candidate = match.group().strip()
-        # Must contain at least one letter
-        if re.search(r'[A-Z]', candidate, re.IGNORECASE):
-            candidates.append(candidate)
-
-    return candidates[-1] if candidates else ""
+    # Regex: match blocks of 3+ alphanum (optionally separated by space, dash, plus), at end or after dash
+    pattern = r'(?:-\s*)?([A-Z0-9][A-Z0-9\s\+\-]{2,})$'
+    matches = re.findall(pattern, name)
+    # Fallback: also match any block of 3+ alphanum (with optional spaces/pluses/dashes)
+    if not matches:
+        pattern2 = r'([A-Z0-9][A-Z0-9\s\+\-]{2,})'
+        matches = re.findall(pattern2, name)
+    # Filter: must have at least 1 letter and at least 3 chars
+    candidates = [m.strip() for m in matches if any(c.isalpha() for c in m) and len(m.strip()) >= 3]
+    return candidates[-1] if candidates else " "
 
 def normalize_sku(sku):
     return re.sub(r'[^a-zA-Z0-9]', '', sku).lower() if sku else ""
