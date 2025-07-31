@@ -55,7 +55,7 @@ def style_sheet(ws, category_name, date_str):
     from openpyxl.utils import get_column_letter
 
     # === Styles ===
-    header_fill = PatternFill(start_color="000000", end_color="000000", fill_type="solid")  # Black
+    header_fill = PatternFill(start_color="00008B", end_color="00008B", fill_type="solid")  # Black
     header_font = Font(color="FFFFFF", bold=True)
     body_font = Font(color="000000")
     center_align = Alignment(horizontal="center", vertical="center")
