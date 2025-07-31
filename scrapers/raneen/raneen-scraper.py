@@ -92,25 +92,21 @@ def normalize_price(text):
     return int(re.sub(r"[^\d]", "", text))
 
 def extract_sku(name):
-    """
-    Extracts the last (rightmost) SKU-like block from a product name.
-    Criteria:
-    - At least 2 characters long
-    - Contains at least one letter (A-Z, case-insensitive)
-    - May contain letters, numbers, spaces, dashes (-), slashes (/), underscores (_), plus signs (+), and parentheses ((, ))
-    - Ignores RTL marks and extra whitespace
-    """
     if not name:
-        return ""
-    # Remove RTL marks and normalize whitespace
-    cleaned = re.sub(r'[\u200e\u200f\u202a-\u202e]', '', name)
-    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-    # Regex: match blocks of allowed characters, at least 2 chars, at least one letter
-    pattern = r'([A-Za-z0-9 \-/_+()]{2,})'
-    matches = re.findall(pattern, cleaned)
-    # Filter: must contain at least one letter
-    matches = [m.strip() for m in matches if re.search(r'[A-Za-z]', m)]
-    return matches[-1] if matches else ""
+        return " "
+
+    name = name.upper().replace("\u200f", " ")  # remove RTL char
+
+    # Regex: match blocks of 3+ alphanum (optionally separated by space, dash, plus), at end or after dash
+    pattern = r'(?:-\s*)?([A-Z0-9][A-Z0-9\s\+\-]{2,})$'
+    matches = re.findall(pattern, name)
+    # Fallback: also match any block of 3+ alphanum (with optional spaces/pluses/dashes)
+    if not matches:
+        pattern2 = r'([A-Z0-9][A-Z0-9\s\+\-]{2,})'
+        matches = re.findall(pattern2, name)
+    # Filter: must have at least 1 letter and at least 3 chars
+    candidates = [m.strip() for m in matches if any(c.isalpha() for c in m) and len(m.strip()) >= 3]
+    return candidates[-1] if candidates else " "
 
 def normalize_sku(sku):
     # Remove all separators and lowercase
