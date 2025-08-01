@@ -1,4 +1,4 @@
-from selenium import webdriver 
+from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
@@ -14,7 +14,7 @@ from openpyxl.utils import get_column_letter
 
 # === Chrome Setup ===
 options = Options()
-options.add_argument("--headless=new")
+# options.add_argument("--headless=new")
 options.add_argument("--disable-gpu")
 options.add_argument("--no-sandbox")
 options.add_argument("--disable-dev-shm-usage")
@@ -33,20 +33,21 @@ category_links = list(zip(df["Category"], df["URL"]))
 output_dir = "2b-outputs"
 os.makedirs(output_dir, exist_ok=True)
 
-# === Excel Styling ===
-def style_excel_file(path, category_name, date_str):
-    wb = load_workbook(path)
-    ws = wb.active
+# === Final Output File (One Workbook) ===
+timestamp = datetime.now().strftime("%Y-%m-%d")
+output_file = os.path.join(output_dir, f"2b-all-categories_{timestamp}.xlsx")
 
-    header_fill = PatternFill(start_color="003366", end_color="003366", fill_type="solid")
-    header_font = Font(color="FFFFFF", bold=True)
+# === Excel Styling Function (Per Sheet) ===
+def style_sheet(ws, category_name, date_str):
+    """Apply consistent styling: for header, centered, URL column 30 width, no wrap."""
+    header_fill = PatternFill(start_color="FFA500", end_color="FFA500", fill_type="solid")
+    header_font = Font(color="000000", bold=True)
     body_font = Font(color="000000")
     center_align = Alignment(horizontal="center", vertical="center")
     border = Border(bottom=Side(border_style="thin", color="000000"))
 
-    # Insert a new row at the top for the merged header
+    # Insert and merge header row (Row 1)
     ws.insert_rows(1)
-    # Merge the first 6 columns in the first row
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=6)
     merged_cell = ws.cell(row=1, column=1)
     merged_cell.value = f"2B {category_name} {date_str}"
@@ -54,38 +55,45 @@ def style_excel_file(path, category_name, date_str):
     merged_cell.fill = header_fill
     merged_cell.alignment = center_align
 
-    # Style the rest of the header row (now row 2) and body
-    for row in ws.iter_rows(min_row=2):
-        for cell in row:
-            cell.alignment = center_align
-            cell.border = border
-            if cell.row == 2:
-                cell.fill = header_fill
-                cell.font = header_font
-            else:
-                cell.font = body_font
+    # Style header row (Row 2)
+    for cell in ws[2]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = center_align
+        cell.border = border
 
+    # Style body and set column widths
     for column in ws.columns:
-        col_idx = column[0].column
-        col_letter = get_column_letter(col_idx)
-        header = str(column[1].value).strip() if len(column) > 1 and column[1].value else ""
+        col_letter = get_column_letter(column[0].column)
+        header = column[1].value if len(column) > 1 else None
+
         if header == "Product URL":
+            # Fixed width, left-aligned, no wrap, shrink to fit
             ws.column_dimensions[col_letter].width = 30
-            for cell in column:
-                if cell.row > 1:
-                    cell.alignment = Alignment(
-                        horizontal="left",
-                        vertical="center",
-                        wrap_text=False,
-                        shrink_to_fit=True
-                    )
+            for cell in column[2:]:
+                cell.alignment = Alignment(
+                    horizontal="left",
+                    vertical="center",
+                    wrap_text=False,
+                    shrink_to_fit=True  # Changed to True to match Option 1
+                )
+                cell.font = body_font
+                cell.border = border
         else:
-            max_length = max(len(str(cell.value)) if cell.value else 0 for cell in column[1:])
-            ws.column_dimensions[col_letter].width = max_length + 2
+            # Auto width for other columns
+            max_length = 0
+            for cell in column[2:]:
+                if cell.value:
+                    max_length = max(max_length, len(str(cell.value)))
+            ws.column_dimensions[col_letter].width = max_length + 5
 
-    wb.save(path)
+            # Center-align non-URL cells
+            for cell in column[2:]:
+                cell.alignment = center_align
+                cell.font = body_font
+                cell.border = border
 
-# === Helpers ===
+# === Helper Functions ===
 def normalize_price(text):
     if not text:
         return None
@@ -93,20 +101,15 @@ def normalize_price(text):
 
 def extract_sku(name):
     if not name:
-        return " "
-
-    name = name.upper().replace("\u200f", " ")  # remove RTL char
-
-    # Regex: match blocks of 3+ alphanum (optionally separated by space, dash, plus), at end or after dash
+        return ""
+    name = name.upper().replace("\u200f", " ")
     pattern = r'(?:-\s*)?([A-Z0-9][A-Z0-9\s\+\-]{2,})$'
     matches = re.findall(pattern, name)
-    # Fallback: also match any block of 3+ alphanum (with optional spaces/pluses/dashes)
     if not matches:
         pattern2 = r'([A-Z0-9][A-Z0-9\s\+\-]{2,})'
         matches = re.findall(pattern2, name)
-    # Filter: must have at least 1 letter and at least 3 chars
     candidates = [m.strip() for m in matches if any(c.isalpha() for c in m) and len(m.strip()) >= 3]
-    return candidates[-1] if candidates else " "
+    return candidates[-1] if candidates else ""
 
 def normalize_sku(sku):
     return re.sub(r'[^a-zA-Z0-9]', '', sku).lower() if sku else ""
@@ -115,14 +118,17 @@ def normalize_sku(sku):
 driver = webdriver.Chrome(options=options)
 wait = WebDriverWait(driver, 10)
 
-# === Main Loop ===
+# === Collect Data by Category ===
 print("🚀 Starting 2B Scraper...")
+data_by_category = {}
+
 for category, url in category_links:
-    print(f"\n➡️ Scraping Category: {category}\n🔗 {url}")
+    print(f"\n➡️ Scraping Category: {category}")
+    print(f"🔗 {url}")
     driver.get(url)
     time.sleep(2)
 
-    # Scroll to load all products
+    # Infinite Scroll
     last_height = driver.execute_script("return document.body.scrollHeight")
     while True:
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
@@ -132,6 +138,7 @@ for category, url in category_links:
             break
         last_height = new_height
 
+    # Extract Products
     products = driver.find_elements(By.CSS_SELECTOR, "div.product-item-info")
     print(f"✅ Found {len(products)} products.")
 
@@ -142,7 +149,7 @@ for category, url in category_links:
             title = title_el.text.strip()
             product_url = title_el.get_attribute("href").strip()
 
-            # Extract new price
+            # New Price
             try:
                 new_price_el = product.find_element(By.CSS_SELECTOR, ".special-price .price")
                 new_price = normalize_price(new_price_el.text)
@@ -153,7 +160,7 @@ for category, url in category_links:
                 except:
                     new_price = None
 
-            # Extract old price
+            # Old Price
             try:
                 old_price_el = product.find_element(By.CSS_SELECTOR, ".old-price .price")
                 old_price = normalize_price(old_price_el.text)
@@ -170,27 +177,40 @@ for category, url in category_links:
                 "New Price": new_price,
                 "Product Code": product_code,
                 "Normalized Code": normalized_code,
-                "Product URL": product_url  # Product URL is now last
+                "Product URL": product_url
             })
 
         except Exception as e:
-            print(f"⚠️ Skipped product due to error: {e}")
+            print(f"⚠️ Skipped product: {e}")
             continue
 
+    # Save data for this category
     if data:
-        timestamp = datetime.now().strftime("%Y-%m-%d")
-        safe_category = re.sub(r"[^\w\s-]", "", category).replace(" ", "_")
-        output_file = os.path.join(output_dir, f"2b_{safe_category}_{timestamp}.xlsx")
-        df_out = pd.DataFrame(data)
-        df_out.to_excel(output_file, index=False, engine='openpyxl')
-        # Pass category and date for merged header
-        style_excel_file(output_file, category, datetime.now().strftime("%y-%m-%d"))
-        print(f"💾 Saved {len(data)} products to {output_file}")
+        data_by_category[category] = data
+        print(f"📌 Collected {len(data)} products for '{category}'")
     else:
-        print("⚠️ No product data collected.")
+        print(f"⚠️ No products collected for '{category}'")
 
-# === Done ===
+# === Save All Data to Single Workbook ===
+if data_by_category:
+    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+        for category, data in data_by_category.items():
+            # Clean sheet name (remove invalid chars, limit to 31)
+            safe_sheet_name = re.sub(r'[\/\\*?\[\]:"]', '_', category)[:31].strip()
+            df_out = pd.DataFrame(data)[[
+                "Item Name",
+                "Old Price",
+                "New Price",
+                "Product Code",
+                "Normalized Code",
+                "Product URL"
+            ]]
+            df_out.to_excel(writer, sheet_name=safe_sheet_name, index=False)
+            style_sheet(writer.sheets[safe_sheet_name], category, datetime.now().strftime("%y-%m-%d"))
+    print(f"📁 Saved all categories to: {output_file}")
+else:
+    print("⚠️ No data collected across all categories.")
+
+# === Cleanup ===
 driver.quit()
-print("🏁 All categories processed for 2B.")
-print("✅ Scraping completed successfully!")
-print(f"📂 Output files saved in: {output_dir}")
+print("🏁 2B scraping completed.")
