@@ -3,9 +3,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import (
-    ElementClickInterceptedException, TimeoutException, StaleElementReferenceException
-)
+from selenium.common.exceptions import TimeoutException, ElementClickInterceptedException
 import time
 import pandas as pd
 import os
@@ -17,15 +15,16 @@ from openpyxl.utils import get_column_letter
 
 # === Chrome Setup ===
 options = Options()
-# options.add_argument('--headless=new')
+# options.add_argument('--headless=new')  # Uncomment for headless mode
 options.add_argument('--disable-gpu')
 options.add_argument('--window-size=1920,1080')
-options.add_argument('--lang=ar')
-options.add_argument('--disable-blink-features=AutomationControlled')  # Try to avoid detection
-options.add_experimental_option('excludeSwitches', ['enable-automation'])  # Try to avoid detection
-options.add_experimental_option('useAutomationExtension', False)  # Try to avoid detection
+options.add_argument('--disable-blink-features=AutomationControlled')
+options.add_experimental_option('excludeSwitches', ['enable-automation'])
+options.add_experimental_option('useAutomationExtension', False)
 driver = webdriver.Chrome(options=options)
-driver.execute_cdp_cmd('Network.setUserAgentOverride', {"userAgent": 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'})
+driver.execute_cdp_cmd('Network.setUserAgentOverride', {
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+})
 wait = WebDriverWait(driver, 10)
 
 # === Input Excel ===
@@ -39,20 +38,21 @@ category_links = list(zip(df["Category"], df["URL"]))
 output_dir = "btech-outputs"
 os.makedirs(output_dir, exist_ok=True)
 
-# === Excel Styling ===
-def style_excel_file(path, category_name, date_str):
-    wb = load_workbook(path)
-    ws = wb.active
+# === Final Output File (One Workbook) ===
+timestamp = datetime.now().strftime("%Y-%m-%d")
+output_file = os.path.join(output_dir, f"btech-all-categories_{timestamp}.xlsx")
 
+# === Excel Styling Function (Per Sheet) ===
+def style_sheet(ws, category_name, date_str):
+    """Apply consistent styling: black header, centered, URL column width 20, shrink-to-fit."""
     header_fill = PatternFill(start_color="000000", end_color="000000", fill_type="solid")
     header_font = Font(color="FFFFFF", bold=True)
     body_font = Font(color="000000")
     center_align = Alignment(horizontal="center", vertical="center")
     border = Border(bottom=Side(border_style="thin", color="000000"))
 
-    # Insert a new row at the top for the merged header
+    # Insert and merge header row (Row 1)
     ws.insert_rows(1)
-    # Merge the first 6 columns in the first row
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=6)
     merged_cell = ws.cell(row=1, column=1)
     merged_cell.value = f"Btech {category_name} {date_str}"
@@ -60,203 +60,148 @@ def style_excel_file(path, category_name, date_str):
     merged_cell.fill = header_fill
     merged_cell.alignment = center_align
 
-    # Style the rest of the header row (now row 2) and body
-    for row in ws.iter_rows(min_row=2):
-        for cell in row:
-            cell.alignment = center_align
-            cell.border = border
-            if cell.row == 2:
-                cell.fill = header_fill
-                cell.font = header_font
-            else:
-                cell.font = body_font
+    # Style header row (Row 2)
+    for cell in ws[2]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = center_align
+        cell.border = border
 
+    # Style body and set column widths
     for column in ws.columns:
-        col_idx = column[0].column
-        col_letter = get_column_letter(col_idx)
-        header = str(column[1].value).strip() if len(column) > 1 and column[1].value else ""
+        col_letter = get_column_letter(column[0].column)
+        header = column[1].value if len(column) > 1 else None
+
         if header == "Product URL":
-            ws.column_dimensions[col_letter].width = 30
-            for cell in column:
-                if cell.row > 1:
-                    cell.alignment = Alignment(
-                        horizontal="center",
-                        vertical="center",
-                        wrap_text=False,
-                        shrink_to_fit=True
-                    )
+            # Fixed width, left-aligned, shrink to fit
+            ws.column_dimensions[col_letter].width = 20
+            for cell in column[2:]:
+                cell.alignment = Alignment(
+                    horizontal="left",
+                    vertical="center",
+                    wrap_text=False,
+                    shrink_to_fit=True
+                )
+                cell.font = body_font
+                cell.border = border
         else:
-            max_length = max(len(str(cell.value)) if cell.value else 0 for cell in column[1:])
-            ws.column_dimensions[col_letter].width = max_length + 2
+            # Auto width for other columns
+            max_length = 0
+            for cell in column[2:]:
+                if cell.value:
+                    max_length = max(max_length, len(str(cell.value)))
+            ws.column_dimensions[col_letter].width = max_length + 6
 
-    wb.save(path)
+            # Center-align non-URL cells
+            for cell in column[2:]:
+                cell.alignment = center_align
+                cell.font = body_font
+                cell.border = border
 
-# === Helpers ===
-def normalize_price(price_text):
-    return int(price_text.replace(",", "").strip()) if price_text else None
+# === Helper Functions ===
+def normalize_price(text):
+    """Extract integer from price text."""
+    if not text:
+        return None
+    return int(re.sub(r"[^\d]", "", text))
 
 def extract_sku(name):
+    """Btech-style SKU extraction."""
     if not name:
         return ""
-
-    name = name.upper().replace("\u200f", "")  # remove RTL char
-
-    # Regex: match blocks of 3+ alphanum (optionally separated by space, dash, plus), at end or after dash
+    name = name.upper().replace("\u200f", " ")
     pattern = r'(?:-\s*)?([A-Z0-9][A-Z0-9\s\+\-]{2,})$'
     matches = re.findall(pattern, name)
-    # Fallback: also match any block of 3+ alphanum (with optional spaces/pluses/dashes)
     if not matches:
         pattern2 = r'([A-Z0-9][A-Z0-9\s\+\-]{2,})'
         matches = re.findall(pattern2, name)
-    # Filter: must have at least 1 letter and at least 3 chars
     candidates = [m.strip() for m in matches if any(c.isalpha() for c in m) and len(m.strip()) >= 3]
     return candidates[-1] if candidates else ""
 
 def normalize_sku(sku):
+    """Remove separators and lowercase."""
     return re.sub(r'[^a-zA-Z0-9]', '', sku).lower() if sku else ""
 
+# === Extract Total Expected Products ===
 def extract_total_expected_products(driver):
+    """Extract total from #product-search-item-count."""
     try:
-        # Find the initial count from the header
-        el = WebDriverWait(driver, 5).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "div.my-product-title span#product-search-item-count"))
+        el = wait.until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "span#product-search-item-count"))
         )
-        initial_count = int(el.text.strip())
-        
-        # Verify count from the amscroll message
-        try:
-            scroll_msg = driver.find_element(By.CSS_SELECTOR, "section.plpnew_wrap div.amscroll-count-message")
-            if scroll_msg:
-                # Extract numbers from text like "شاهدت 5 من 10 منتج"
-                numbers = [int(num) for num in re.findall(r'\d+', scroll_msg.text)]
-                if numbers and len(numbers) >= 2:
-                    confirmed_count = max(numbers)
-                    if confirmed_count == initial_count:
-                        return initial_count
-                    else:
-                        print(f"⚠️ Count mismatch: header shows {initial_count}, scroll message shows {confirmed_count}")
-                        return max(initial_count, confirmed_count)
-        except:
-            pass
-        
-        return initial_count
+        text = el.text.strip()
+        print(f"🔍 Found product count: {text}")
+        if text.isdigit():
+            return int(text)
+        numbers = re.findall(r'\d+', text)
+        return int(numbers[0]) if numbers else None
     except Exception as e:
-        print(f"⚠️ Could not extract expected count: {str(e)}")
+        print(f"❌ Could not find product count: {str(e)}")
         return None
 
-# === Scrape Each Category ===
+# === Start Scraping ===
 print("🚀 Starting Btech Scraper")
+data_by_category = {}
+
 for category, url in category_links:
-    print(f"\n➡️ Category: {category} | URL: {url}")
+    print(f"\n➡️ Scraping Category: {category}")
+    print(f"🔗 URL: {url}")
     driver.get(url)
-    time.sleep(5)  # Initial longer wait for full page load
-    
-    # Wait for the main product container to be present and visible
+    time.sleep(3)
+
+    # Wait for product container
     try:
-        # Try different possible container selectors
-        container_selectors = [
-            "div.products.wrapper.grid.products-grid",
-            "div.products.list.items.product-items",
-            "ol.products.list.items.product-items"
-        ]
-        
-        container_found = False
-        for selector in container_selectors:
-            try:
-                print(f"Trying to find container with selector: {selector}")
-                WebDriverWait(driver, 5).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, selector))
-                )
-                container_found = True
-                print(f"✅ Found container with selector: {selector}")
-                break
-            except:
-                print(f"❌ Container not found with selector: {selector}")
-                continue
-        
-        if not container_found:
-            print("⚠️ Could not find any product container, trying to save page source for debugging")
-            with open(f"debug_page_{safe_category}.html", "w", encoding="utf-8") as f:
-                f.write(driver.page_source)
-            raise Exception("No product container found")
-            
-    except Exception as e:
-        print(f"⚠️ Page did not load properly: {str(e)}, skipping category")
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div.products.wrapper.grid.products-grid")))
+    except TimeoutException:
+        print("❌ Timeout: Product container not found. Skipping.")
         continue
-        
-    # Scroll down a bit to trigger any lazy loading
-    driver.execute_script("window.scrollBy(0, 300)")
-    time.sleep(2)
 
-    safe_category = re.sub(r"[^\w\s-]", "", category).replace(" ", "_")
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    output_path = os.path.join(output_dir, f"btech_{safe_category}_{date_str}.xlsx")
-
+    # Get expected total
     expected_total = extract_total_expected_products(driver)
-    max_scrape_limit = expected_total + 2 if expected_total else float("inf")
-    print(f"📊 Expected products: {expected_total} | Max scrape: {max_scrape_limit}")
+    if not expected_total:
+        print("⚠️ Could not determine product count. Skipping category.")
+        continue
+    max_scrape_limit = expected_total + 2
+    print(f"📊 Expected: {expected_total} | Max: {max_scrape_limit}")
 
-    previous_count = -1
-    attempt = 0
-    max_attempts = 40
+    # Click "Load More" safely
+    previous_count = 0
+    click_count = 0
+    max_clicks = (expected_total // 30) + 5  # 30 per click + margin
 
-    while attempt < max_attempts:
+    while click_count < max_clicks:
         time.sleep(2)
-        products = driver.find_elements(By.CSS_SELECTOR, "div.plpContentWrapper")
-        current_count = len(products)
-        print(f"🟨 Products loaded: {current_count}")
-        print(f"🟨 Products loaded: {current_count}")
+        current_cards = driver.find_elements(By.CSS_SELECTOR, "div.plpContentWrapper")
+        current_count = len(current_cards)
+        print(f"🔄 Loaded {current_count} products...")
 
-        if expected_total and current_count >= expected_total + 2:
-            print("🛑 Expected count reached.")
+        if current_count >= max_scrape_limit:
+            print(f"✅ Reached limit: {current_count}")
             break
+
         if current_count == previous_count:
-            # Double check if we really need to break
-            try:
-                load_more_visible = driver.find_element(By.CSS_SELECTOR, "div.amscroll-load-button").is_displayed()
-                if not load_more_visible:
-                    print("✅ No more products to load.")
-                    break
-            except:
-                print("✅ No Load More button found.")
-                break
+            click_count += 1
+        else:
+            click_count = 0
+
         previous_count = current_count
 
         try:
-            # Look for the load more button with its complete attributes
-            load_more_btn = wait.until(
-                EC.presence_of_element_located((
-                    By.CSS_SELECTOR, 
-                    "div.amscroll-load-button.btn-outline.primary.medium[amscroll_type='after']"
-                ))
-            )
-            
-            # Verify button is visible and has expected Arabic text
-            if not load_more_btn.is_displayed():
-                print("ℹ️ Load More button not visible.")
-                break
-            
-            button_text = load_more_btn.text.strip()
-            if not button_text or not any(text in button_text for text in ["عرض", "المزيد"]):
-                print(f"⚠️ Load More button has unexpected text: {button_text}")
-                break
-                
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", load_more_btn)
-            time.sleep(1.5)  # Give more time for any animations
-            
-            try:
-                load_more_btn.click()
-                print("🔁 Clicked Load More (expecting +30 products)")
-            except ElementClickInterceptedException:
-                print("⚠️ Intercepted, retrying with JS")
-                driver.execute_script("arguments[0].click();", load_more_btn)
-            
-            # Wait for new products to load
-            time.sleep(2)
-        except TimeoutException:
-            print("ℹ️ Load More button not found.")
+            load_more = driver.find_element(By.CSS_SELECTOR, "div.amscroll-load-button")
+            if "عرض" in load_more.text or "المزيد" in load_more.text:
+                print(f"➡️ Clicking 'Load More' ({click_count + 1}/{max_clicks})...")
+                try:
+                    load_more.click()
+                except:
+                    driver.execute_script("arguments[0].click();", load_more)
+                time.sleep(3)
+        except:
+            print("🔚 'Load More' not found.")
             break
-        attempt += 1
+
+    # Final product list
+    product_cards = driver.find_elements(By.CSS_SELECTOR, "div.plpContentWrapper")
+    print(f"✅ Final count: {len(product_cards)}")
 
     # === Parse Products ===
     data = []
@@ -265,22 +210,30 @@ for category, url in category_links:
 
     for wrapper in wrappers:
         try:
-            title_el = wrapper.find_elements(By.CSS_SELECTOR, "h2.plpTitle")
-            if not title_el or not title_el[0].text.strip():
+            # Title
+            title_els = wrapper.find_elements(By.CSS_SELECTOR, "h2.plpTitle")
+            if not title_els or not title_els[0].text.strip():
                 continue
-            title = title_el[0].text.strip()
-            
-            new_price_el = wrapper.find_elements(By.CSS_SELECTOR, "span.special-price span.price-wrapper")
-            old_price_el = wrapper.find_elements(By.CSS_SELECTOR, "span.old-price.was-price span.price-wrapper")
+            title = title_els[0].text.strip()
 
-            new_price = normalize_price(new_price_el[0].text) if new_price_el else None
-            old_price = normalize_price(old_price_el[0].text) if old_price_el else None
+            # URL (from wrapper anchor)
+            product_url = wrapper.get_attribute("href").strip()
 
-            product_url = wrapper.get_attribute("href")
-            
-            if not new_price:
-                print(f"⚠️ Could not find any price for: {title}")
-            
+            # New Price
+            try:
+                new_price_el = wrapper.find_element(By.CSS_SELECTOR, "span.special-price span.price-wrapper")
+                new_price = normalize_price(new_price_el.text)
+            except:
+                new_price = None
+
+            # Old Price
+            try:
+                old_price_el = wrapper.find_element(By.CSS_SELECTOR, "span.old-price.was-price span.price-wrapper")
+                old_price = normalize_price(old_price_el.text)
+            except:
+                old_price = None
+
+            # SKU Extraction
             product_code = extract_sku(title)
             normalized_code = normalize_sku(product_code)
 
@@ -293,32 +246,35 @@ for category, url in category_links:
                 "Product URL": product_url
             })
         except Exception as e:
-            print("❌ Skipped product:", e)
+            print(f"❌ Skipped product: {e}")
+            continue
 
-    # === Save Output ===
+    # Save data for this category
     if data:
-        # Limit to expected_total + 2 if expected_total is available
-        limit = expected_total + 2 if expected_total else None
-        if limit and len(data) > limit:
-            print(f"⚠️ Scraped {len(data)} products, but expected only {expected_total}. Limiting to {limit}.")
-            data = data[:limit]
-        df_out = pd.DataFrame(data)
-        # Reorder columns so Product URL is last (6th)
-        ordered_cols = [
-            "Item Name",
-            "Old Price",
-            "New Price",
-            "Product Code",
-            "Normalized Code",
-            "Product URL"
-        ]
-        df_out = df_out[ordered_cols]
-        df_out.to_excel(output_path, index=False, engine='openpyxl')
-        style_excel_file(output_path, category, datetime.now().strftime("%y-%m-%d"))
-        print(f"✅ Saved {len(data)} products to {output_path}")
+        data_by_category[category] = data
+        print(f"📌 Collected {len(data)} products for '{category}'")
     else:
-        print("⚠️ No data extracted.")
+        print(f"⚠️ No products collected for '{category}'")
 
-# === Done ===
+# === Save All Data to Single Workbook ===
+if data_by_category:
+    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+        for category, data in data_by_category.items():
+            safe_sheet_name = re.sub(r'[^\w\s-]', '_', category)[:31].strip()
+            df_out = pd.DataFrame(data)[[
+                "Item Name",
+                "Old Price",
+                "New Price",
+                "Product Code",
+                "Normalized Code",
+                "Product URL"
+            ]]
+            df_out.to_excel(writer, sheet_name=safe_sheet_name, index=False)
+            style_sheet(writer.sheets[safe_sheet_name], category, datetime.now().strftime("%y-%m-%d"))
+    print(f"📁 Saved all categories to: {output_file}")
+else:
+    print("⚠️ No data collected across all categories.")
+
+# === Cleanup ===
 driver.quit()
-print("🏁 All categories processed for Btech.")
+print("🏁 Btech scraping completed.")
