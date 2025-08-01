@@ -44,70 +44,60 @@ output_file = os.path.join(output_dir, f"raya-all-categories_{timestamp}.xlsx")
 
 # === Excel Styling Function (Per Sheet) ===
 def style_sheet(ws, category_name, date_str):
-    """
-    Applies consistent styling (same as Rizkalla/Btech).
-    - Black header, white bold text
-    - Center alignment
-    - URL column: width 30, left-aligned, no wrap
-    - Other columns: auto width
-    """
-    from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
-    from openpyxl.utils import get_column_letter
-
-    # === Styles ===
-    header_fill = PatternFill(start_color="00008B", end_color="00008B", fill_type="solid")  # Black
+    """Apply consistent styling: blue header, centered, URL column 30 width, no wrap."""
+    header_fill = PatternFill(start_color="00008B", end_color="00008B", fill_type="solid")
     header_font = Font(color="FFFFFF", bold=True)
     body_font = Font(color="000000")
     center_align = Alignment(horizontal="center", vertical="center")
     border = Border(bottom=Side(border_style="thin", color="000000"))
 
-    # === Insert Merged Header Row (Row 1) ===
+    # Insert and merge header row (Row 1)
     ws.insert_rows(1)
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=6)
     merged_cell = ws.cell(row=1, column=1)
-    merged_cell.value = f"Raya {category_name} {date_str}"
+    merged_cell.value = f"RAYA {category_name} {date_str}"
     merged_cell.font = header_font
     merged_cell.fill = header_fill
     merged_cell.alignment = center_align
 
-    # === Style Header Row (Row 2) ===
+    # Style header row (Row 2)
     for cell in ws[2]:
         cell.fill = header_fill
         cell.font = header_font
         cell.alignment = center_align
         cell.border = border
 
-    # === Style Body (Rows 3+) and Set Column Widths ===
+    # Style body and set column widths
     for column in ws.columns:
-        col_idx = column[0].column
-        col_letter = get_column_letter(col_idx)
-        header = str(column[1].value).strip() if len(column) > 1 and column[1].value else ""
+        col_letter = get_column_letter(column[0].column)
+        header = column[1].value if len(column) > 1 else None
 
         if header == "Product URL":
+            # Fixed width, left-aligned, no wrap, shrink to fit
             ws.column_dimensions[col_letter].width = 30
-            for cell in column:
-                if cell.row == 1:
-                    cell.alignment = center_align
-                elif cell.row == 2:
-                    cell.alignment = Alignment(horizontal="center", vertical="center")
-                else:
-                    cell.alignment = Alignment(
-                        horizontal="center",
-                        vertical="center",
-                        wrap_text=False,
-                        shrink_to_fit=True
-                    )
+            for cell in column[2:]:
+                cell.alignment = Alignment(
+                    horizontal="left",
+                    vertical="center",
+                    wrap_text=False,
+                    shrink_to_fit=True  # Changed to True to match Option 1
+                )
+                cell.font = body_font
+                cell.border = border
         else:
-            max_length = max(len(str(cell.value)) if cell.value else 0 for cell in column[1:])
-            ws.column_dimensions[col_letter].width = max_length + 2
+            # Auto width for other columns
+            max_length = 0
+            for cell in column[2:]:
+                if cell.value:
+                    max_length = max(max_length, len(str(cell.value)))
+            ws.column_dimensions[col_letter].width = max_length + 6
 
             # Center-align non-URL cells
-            for cell in column:
-                if cell.row > 2:
-                    cell.alignment = center_align
-                    cell.font = body_font
-                    cell.border = border
-
+            for cell in column[2:]:
+                cell.alignment = center_align
+                cell.font = body_font
+                cell.border = border
+                
 # === Helper Functions ===
 def normalize_price(text):
     """Extracts integer from price text (removes commas)."""
@@ -189,23 +179,47 @@ for category, url in category_links:
         continue
     print(f"📊 Expected products: {total_count}")
 
-    # Infinite Scroll
-    last_height = driver.execute_script("return document.body.scrollHeight")
-    while True:
+    # Infinite Scroll with Product Count Verification
+    seen_count = 0
+    max_wait_attempts = 10
+    attempt = 0
+
+    while attempt < max_wait_attempts:
+        # Scroll to bottom
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(2)
-        new_height = driver.execute_script("return document.body.scrollHeight")
-        if new_height == last_height:
-            print("✅ No more products loading.")
-            break
-        last_height = new_height
+        time.sleep(3)  # Allow time for AJAX load
 
-        # Break early if we've loaded enough
-        product_cards = driver.find_elements(By.CSS_SELECTOR, "article.ProductCard")
-        if len(product_cards) >= total_count + 5:
-            print(f"✅ Loaded {len(product_cards)} products (expected: {total_count})")
+        # Find current number of product cards
+        current_cards = driver.find_elements(By.CSS_SELECTOR, "article.ProductCard")
+        current_count = len(current_cards)
+
+        print(f"🔄 Loaded {current_count} / {total_count} products...")
+
+        # ✅ If we've reached or exceeded expected count, stop
+        if current_count >= total_count:
+            print(f"✅ Loaded all {current_count} expected products.")
             break
 
+        # ⚠️ If no new products loaded in this iteration
+        if current_count == seen_count:
+            attempt += 1
+            print(f"⚠️ No new products. Stagnant attempt {attempt}/{max_wait_attempts}")
+        else:
+            attempt = 0  # Reset if new products loaded
+
+        seen_count = current_count
+
+        # 🛑 Safety break
+        if attempt >= max_wait_attempts:
+            print("🛑 Max wait attempts reached. May have missed some products.")
+            break
+    
+    # Final verification
+    final_cards = driver.find_elements(By.CSS_SELECTOR, "article.ProductCard")
+    print(f"✅ Final product count: {len(final_cards)}")
+    if len(final_cards) < total_count:
+        print(f"⚠️ Warning: Only {len(final_cards)} out of {total_count} products loaded.")
+        
     # Extract product cards
     product_cards = driver.find_elements(By.CSS_SELECTOR, "article.ProductCard")
     print(f"✅ Found {len(product_cards)} product cards.")
